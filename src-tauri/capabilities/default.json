@@ -9,6 +9,9 @@
     "core:default",
     "opener:default",
     "fs:default",
-    "dialog:default"
+    "dialog:default",
+    "positioner:default",
+    "autostart:default",
+    "global-shortcut:default"
   ]
 }

@@ -2,7 +2,8 @@ import { defineStore } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ref, computed } from "vue";
+import { remove } from "@tauri-apps/plugin-fs";
+import { ref, computed, watch } from "vue";
 
 export interface DownloadItem {
   id: string;
@@ -14,6 +15,9 @@ export interface DownloadItem {
   speed: number;
   status: "pending" | "downloading" | "paused" | "error" | "completed";
   error?: string;
+  etag?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface StorageInfo {
@@ -23,13 +27,140 @@ export interface StorageInfo {
   mount_point: string;
 }
 
+export interface AppSettings {
+  wallpaper_url: string | null;
+  theme: 'light' | 'dark' | null;
+  default_download_path: string | null;
+  author: string;
+  launch_on_startup: boolean;
+  toggle_keybind: string | null;
+  use_new_ui: boolean;
+}
+
+interface DownloadHistoryItem {
+  id: string;
+  url: string;
+  path: string;
+  filename: string;
+  total: number | null;
+  downloaded: number;
+  status: string;
+  etag: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface DownloadHistory {
+  items: DownloadHistoryItem[];
+}
+
 export const useDownloadStore = defineStore("download", () => {
   const downloads = ref<DownloadItem[]>([]);
   const selectedPath = ref<string>("");
   const storageInfo = ref<StorageInfo | null>(null);
+  const settings = ref<AppSettings | null>(null);
+  const initialized = ref(false);
+  const filterStatus = ref<'all' | 'active' | 'completed'>('all');
 
   // Getters
   const activeDownloads = computed(() => downloads.value.filter(d => d.status === "downloading"));
+  const completedDownloads = computed(() => downloads.value.filter(d => d.status === "completed"));
+  
+  // Filtered downloads based on current filter
+  const filteredDownloads = computed(() => {
+    switch (filterStatus.value) {
+      case 'active':
+        return downloads.value.filter(d => ['downloading', 'paused', 'pending', 'error'].includes(d.status));
+      case 'completed':
+        return downloads.value.filter(d => d.status === 'completed');
+      default:
+        return downloads.value;
+    }
+  });
+
+  // Initialize store - load settings and history
+  async function init() {
+    if (initialized.value) return;
+    
+    try {
+      // Load settings
+      settings.value = await invoke<AppSettings>("load_settings");
+      
+      // Load download history
+      const history = await invoke<DownloadHistory>("load_download_history");
+      if (history.items && history.items.length > 0) {
+        downloads.value = history.items.map(item => ({
+          id: item.id,
+          url: item.url,
+          path: item.path,
+          filename: item.filename,
+          total: item.total,
+          downloaded: item.downloaded,
+          speed: 0,
+          status: item.status as DownloadItem["status"],
+          etag: item.etag || undefined,
+          createdAt: item.created_at,
+          updatedAt: item.updated_at
+        }));
+      }
+      
+      // Restore default download path if set
+      if (settings.value?.default_download_path) {
+        selectedPath.value = settings.value.default_download_path;
+        refreshStorage();
+      }
+      
+      initialized.value = true;
+    } catch (e) {
+      console.error("Failed to initialize store:", e);
+    }
+  }
+
+  // Watch downloads and save history on changes
+  watch(downloads, async () => {
+    if (!initialized.value) return;
+    await saveHistory();
+  }, { deep: true });
+
+  // Save download history
+  async function saveHistory() {
+    try {
+      const history: DownloadHistory = {
+        items: downloads.value.map(d => ({
+          id: d.id,
+          url: d.url,
+          path: d.path,
+          filename: d.filename,
+          total: d.total,
+          downloaded: d.downloaded,
+          status: d.status,
+          etag: d.etag || null,
+          created_at: d.createdAt || new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }))
+      };
+      await invoke("save_download_history", { history });
+    } catch (e) {
+      console.error("Failed to save history:", e);
+    }
+  }
+
+  // Update settings
+  async function updateSettings(newSettings: Partial<AppSettings>) {
+    try {
+      const updated = {
+        ...settings.value,
+        ...newSettings,
+        author: "@rohanpls"
+      } as AppSettings;
+      
+      await invoke("save_settings", { settings: updated });
+      settings.value = updated;
+    } catch (e) {
+      console.error("Failed to save settings:", e);
+      throw e;
+    }
+  }
 
   // Listeners
   listen<any>("download://progress", (event) => {
@@ -93,7 +224,8 @@ export const useDownloadStore = defineStore("download", () => {
             total: null,
             downloaded: 0,
             speed: 0,
-            status: "downloading"
+            status: "downloading",
+            createdAt: new Date().toISOString()
         });
     } catch (e: any) {
         console.error("Failed to start", e);
@@ -125,6 +257,55 @@ export const useDownloadStore = defineStore("download", () => {
           item.status = "error";
       }
   }
+
+  async function removeDownload(item: DownloadItem, deleteFile: boolean = false) {
+    // If downloading, pause first
+    if (item.status === "downloading") {
+      try {
+        await invoke("pause_download", { id: item.id });
+      } catch (e) {
+        console.error("Failed to pause before removing:", e);
+      }
+    }
+    
+    // Optionally delete the file
+    if (deleteFile) {
+      const sep = navigator.userAgent.includes("Windows") ? "\\" : "/";
+      const fullPath = `${item.path}${sep}${item.filename}`;
+      try {
+        await remove(fullPath);
+      } catch (e) {
+        console.error("Failed to delete file:", e);
+      }
+    }
+    
+    // Remove from list
+    const index = downloads.value.findIndex(d => d.id === item.id);
+    if (index !== -1) {
+      downloads.value.splice(index, 1);
+    }
+  }
+
+  async function clearAllHistory() {
+    // Pause all active downloads first
+    for (const item of downloads.value) {
+      if (item.status === "downloading") {
+        try {
+          await invoke("pause_download", { id: item.id });
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+    
+    downloads.value = [];
+    
+    try {
+      await invoke("clear_download_history");
+    } catch (e) {
+      console.error("Failed to clear history:", e);
+    }
+  }
   
   async function selectFolder() {
       const selected = await open({
@@ -133,11 +314,13 @@ export const useDownloadStore = defineStore("download", () => {
       });
       
       if (selected) {
-          // If multiple=false, it returns string or null (or string[] if multiple=true? check types)
-          // Tauri v2 dialog checks...
-          // Usually returns string | null for single selection.
           selectedPath.value = selected as string;
           refreshStorage();
+          
+          // Save as default path
+          if (settings.value) {
+            updateSettings({ default_download_path: selected as string });
+          }
       }
   }
   
@@ -151,15 +334,64 @@ export const useDownloadStore = defineStore("download", () => {
       }
   }
 
+  // Check if a file exists at the given path
+  async function checkFileExists(filename: string): Promise<boolean> {
+    if (!selectedPath.value) return false;
+    const sep = navigator.userAgent.includes("Windows") ? "\\" : "/";
+    const fullPath = `${selectedPath.value}${sep}${filename}`;
+    try {
+      return await invoke<boolean>("file_exists", { path: fullPath });
+    } catch (e) {
+      console.error("Failed to check file existence:", e);
+      return false;
+    }
+  }
+
+  // Generate a unique filename with suffix (e.g., file(1).txt, file(2).txt)
+  function generateUniqueFilename(filename: string, suffix: number): string {
+    const lastDot = filename.lastIndexOf(".");
+    if (lastDot === -1) {
+      return `${filename}(${suffix})`;
+    }
+    const name = filename.substring(0, lastDot);
+    const ext = filename.substring(lastDot);
+    return `${name}-${suffix}${ext}`;
+  }
+
+  // Find next available filename
+  async function findAvailableFilename(filename: string): Promise<string> {
+    let currentFilename = filename;
+    let suffix = 1;
+    
+    while (await checkFileExists(currentFilename)) {
+      currentFilename = generateUniqueFilename(filename, suffix);
+      suffix++;
+      if (suffix > 100) break; // Safety limit
+    }
+    
+    return currentFilename;
+  }
+
   return {
     downloads,
     selectedPath,
     storageInfo,
+    settings,
+    filterStatus,
+    init,
     startDownload,
     pauseDownload,
     resumeDownload,
+    removeDownload,
+    clearAllHistory,
     selectFolder,
     refreshStorage,
-    activeDownloads
+    updateSettings,
+    activeDownloads,
+    completedDownloads,
+    filteredDownloads,
+    checkFileExists,
+    generateUniqueFilename,
+    findAvailableFilename
   };
 });
