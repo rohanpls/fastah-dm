@@ -45,31 +45,25 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
+      - name: Debug Secret Presence
+        shell: bash
+        env:
+          # map the secret to a local variable
+          THE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$THE_KEY" ]; then
+            echo "🛑 CRITICAL FAILURE: The secret TAURI_SIGNING_PRIVATE_KEY is EMPTY."
+            echo "Please check: Settings -> Secrets -> Actions -> Repository Secrets"
+            exit 1
+          else
+            echo "✅ SUCCESS: The secret was found."
+            echo "Key length: ${#THE_KEY} characters"
+            echo "First line check: ${THE_KEY:0:20}..."
+          fi
+
       - name: Build the app
-        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'FastahDM ${{ github.ref_name }}'
-          releaseBody: |
-            ## What's New
-            
-            See the [full changelog](https://github.com/rohanpls/fastah-dm/compare/${{ github.ref_name }}...main) for details.
-            
-            ## Installation
-            
-            ### Windows
-            - Download and run the installer
-            
-            ### Update via App
-            - Open Settings → Updates → Check for Updates
-            
-            ## Notes
-            - Signed installer with automatic updates enabled
-            - Previous versions can update directly from within the app
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
+        run: pnpm tauri build --verbose
