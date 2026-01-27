@@ -1,51 +1,104 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { useDownloadStore } from "./stores/downloadStore";
+import FolderSelector from "./components/FolderSelector.vue";
+import DownloadItem from "./components/DownloadItem.vue";
 
-const greetMsg = ref("");
-const name = ref("");
+const store = useDownloadStore();
+const url = ref("");
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
+async function addDownload() {
+  if (!url.value) return;
+  // Extract filename from URL basic
+  const filename = url.value.split('/').pop()?.split('?')[0] || `file_${Date.now()}`;
+  
+  try {
+    await store.startDownload(url.value, filename);
+    url.value = "";
+  } catch (e: any) {
+    alert("Failed to start download: " + e);
+  }
 }
 </script>
 
 <template>
   <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
-
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
+    <h1>FastahDM</h1>
+    
+    <FolderSelector />
+    
+    <div class="add-download">
+      <input v-model="url" placeholder="Enter download URL..." />
+      <button @click="addDownload" :disabled="!store.selectedPath">Download</button>
     </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
 
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
+    <div class="download-list">
+      <DownloadItem 
+        v-for="item in store.downloads" 
+        :key="item.id" 
+        :item="item" 
+      />
+      
+      <p v-if="store.downloads.length === 0" class="empty-state">
+        No active downloads.
+      </p>
+    </div>
   </main>
 </template>
 
 <style scoped>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: 'Segoe UI', sans-serif;
 }
 
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #249b73);
+h1 {
+  text-align: center;
+  margin-bottom: 20px;
 }
 
+.add-download {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.add-download input {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.add-download button {
+  padding: 10px 20px;
+  background: #007acc;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.add-download button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty-state {
+  text-align: center;
+  color: #888;
+  margin-top: 20px;
+}
 </style>
+
 <style>
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;

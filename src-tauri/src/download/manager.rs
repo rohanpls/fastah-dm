@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 use std::path::PathBuf;

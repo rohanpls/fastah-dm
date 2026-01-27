@@ -9,6 +9,7 @@ pub struct HttpHelper {
 #[derive(Debug, Clone)]
 pub struct DownloadMetadata {
     pub size: Option<u64>,
+    #[allow(dead_code)]
     pub etag: Option<String>,
     pub accept_ranges: bool,
 }
