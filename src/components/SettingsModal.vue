@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, watch, onMounted, computed } from 'vue';
 import { useDownloadStore } from '../stores/downloadStore';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 import { ask } from '@tauri-apps/plugin-dialog';
+import { getVersion } from '@tauri-apps/api/app';
 
 const props = defineProps<{ show: boolean }>();
 const emit = defineEmits(['close']);
@@ -13,17 +14,63 @@ const launchOnStartup = ref(store.settings?.launch_on_startup || false);
 const toggleKeybind = ref(store.settings?.toggle_keybind || 'Ctrl+Shift+D');
 const capturingKeybind = ref(false);
 
+// Update settings
+const autoUpdateEnabled = ref(store.settings?.auto_update_enabled ?? true);
+const silentUpdates = ref(store.settings?.silent_updates ?? false);
+const appVersion = ref('0.2.0');
+const updateStatus = ref<'checking' | 'available' | 'up-to-date' | 'error' | null>(null);
+
+// Original values for change detection
+const originalTheme = ref<'light' | 'dark'>('dark');
+const originalLaunchOnStartup = ref(false);
+const originalToggleKeybind = ref('Ctrl+Shift+D');
+const originalAutoUpdateEnabled = ref(true);
+const originalSilentUpdates = ref(false);
+
+// Detect if there are unsaved changes
+const hasChanges = computed(() => {
+  return theme.value !== originalTheme.value ||
+         launchOnStartup.value !== originalLaunchOnStartup.value ||
+         toggleKeybind.value !== originalToggleKeybind.value ||
+         autoUpdateEnabled.value !== originalAutoUpdateEnabled.value ||
+         silentUpdates.value !== originalSilentUpdates.value;
+});
+
+onMounted(async () => {
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    console.error('Failed to get app version:', e);
+  }
+});
+
 watch(() => props.show, async (newVal) => {
   if (newVal) {
+    // Load current settings
     theme.value = (store.settings?.theme as 'light' | 'dark') || 'dark';
     launchOnStartup.value = store.settings?.launch_on_startup || false;
     toggleKeybind.value = store.settings?.toggle_keybind || 'Ctrl+Shift+D';
+    autoUpdateEnabled.value = store.settings?.auto_update_enabled ?? true;
+    silentUpdates.value = store.settings?.silent_updates ?? false;
+    
+    // Store original values
+    originalTheme.value = theme.value;
+    originalLaunchOnStartup.value = launchOnStartup.value;
+    originalToggleKeybind.value = toggleKeybind.value;
+    originalAutoUpdateEnabled.value = autoUpdateEnabled.value;
+    originalSilentUpdates.value = silentUpdates.value;
     
     // Check actual autostart status
     try {
       launchOnStartup.value = await isEnabled();
+      originalLaunchOnStartup.value = launchOnStartup.value;
     } catch (e) {
       console.error('Failed to check autostart status:', e);
+    }
+    
+    // Update status based on store state
+    if (store.updateAvailable) {
+      updateStatus.value = 'available';
     }
   }
 });
@@ -44,9 +91,26 @@ async function saveSettings() {
     theme: theme.value,
     launch_on_startup: launchOnStartup.value,
     toggle_keybind: toggleKeybind.value || null,
-    use_new_ui: true
+    use_new_ui: true,
+    auto_update_enabled: autoUpdateEnabled.value,
+    silent_updates: silentUpdates.value
   });
-  emit('close');
+  
+  // Update original values after save
+  originalTheme.value = theme.value;
+  originalLaunchOnStartup.value = launchOnStartup.value;
+  originalToggleKeybind.value = toggleKeybind.value;
+  originalAutoUpdateEnabled.value = autoUpdateEnabled.value;
+  originalSilentUpdates.value = silentUpdates.value;
+}
+
+function cancelSettings() {
+  // Restore original values
+  theme.value = originalTheme.value;
+  launchOnStartup.value = originalLaunchOnStartup.value;
+  toggleKeybind.value = originalToggleKeybind.value;
+  autoUpdateEnabled.value = originalAutoUpdateEnabled.value;
+  silentUpdates.value = originalSilentUpdates.value;
 }
 
 async function clearHistory() {
@@ -57,6 +121,29 @@ async function clearHistory() {
   
   if (answer) {
     await store.clearAllHistory();
+  }
+}
+
+async function checkForUpdatesManually() {
+  updateStatus.value = 'checking';
+  
+  try {
+    const hasUpdate = await store.checkForUpdates();
+    
+    if (hasUpdate) {
+      updateStatus.value = 'available';
+    } else {
+      updateStatus.value = 'up-to-date';
+      setTimeout(() => {
+        updateStatus.value = null;
+      }, 3000);
+    }
+  } catch (e) {
+    console.error('Failed to check for updates:', e);
+    updateStatus.value = 'error';
+    setTimeout(() => {
+      updateStatus.value = null;
+    }, 3000);
   }
 }
 
@@ -123,8 +210,8 @@ function startKeybindCapture() {
       <div class="modal-header">
         <h2>Settings</h2>
         <div class="header-actions">
-          <button class="btn btn-secondary" @click="emit('close')">Cancel</button>
-          <button class="btn btn-primary" @click="saveSettings">Save</button>
+          <button class="btn btn-secondary" @click="cancelSettings" :disabled="!hasChanges">Cancel</button>
+          <button class="btn btn-primary" @click="saveSettings" :disabled="!hasChanges">Save</button>
           <button class="close-btn btn-icon" @click="emit('close')">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -205,10 +292,69 @@ function startKeybindCapture() {
               </button>
             </div>
 
+            <div class="divider"></div>
+
+            <!-- Updates Section -->
+            <div class="setting-group">
+              <label>Updates</label>
+              
+              <label class="toggle-label">
+                <input type="checkbox" v-model="autoUpdateEnabled" />
+                <span>Auto-update enabled</span>
+              </label>
+
+              <label class="toggle-label" :class="{ disabled: !autoUpdateEnabled }">
+                <input type="checkbox" v-model="silentUpdates" :disabled="!autoUpdateEnabled" />
+                <span>Silent updates (install without prompts)</span>
+              </label>
+
+              <div class="update-check-section">
+                <button 
+                  class="btn btn-primary" 
+                  @click="checkForUpdatesManually"
+                  :disabled="updateStatus === 'checking'"
+                >
+                  <svg v-if="updateStatus === 'checking'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="spinning">
+                    <line x1="12" y1="2" x2="12" y2="6"></line>
+                    <line x1="12" y1="18" x2="12" y2="22"></line>
+                    <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+                    <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+                    <line x1="2" y1="12" x2="6" y2="12"></line>
+                    <line x1="18" y1="12" x2="22" y2="12"></line>
+                    <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
+                    <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
+                  </svg>
+                  <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                  </svg>
+                  {{ updateStatus === 'checking' ? 'Checking...' : 'Check for Updates' }}
+                </button>
+                
+                <div class="update-status" v-if="updateStatus">
+                  <span v-if="updateStatus === 'available'" class="status-badge status-available">
+                    Update available: {{ store.updateInfo?.version }}
+                  </span>
+                  <span v-if="updateStatus === 'up-to-date'" class="status-badge status-success">
+                    You're up to date!
+                  </span>
+                  <span v-if="updateStatus === 'error'" class="status-badge status-error">
+                    Failed to check for updates
+                  </span>
+                </div>
+              </div>
+
+              <span class="hint">
+                Fallback: <a href="https://github.com/rohanpls/fastah-dm/releases" target="_blank" class="link">View releases</a>
+              </span>
+            </div>
+
+            <div class="divider"></div>
+
             <div class="about-section">
               <h3>About</h3>
               <p class="app-name">Fastah Download Manager</p>
-              <p class="version">Version 0.2.0</p>
+              <p class="version">Version {{ appVersion }}</p>
               <p class="author">Made with ❤️ by <strong>@rohanpls</strong></p>
             </div>
           </div>
@@ -415,6 +561,74 @@ function startKeybindCapture() {
   height: 18px;
 }
 
+.toggle-label.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 8px 0;
+}
+
+.update-check-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.update-status {
+  display: flex;
+  align-items: center;
+}
+
+.status-badge {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+
+.status-available {
+  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent-color);
+}
+
+.status-success {
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--success-color);
+}
+
+.status-error {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--error-color);
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.link {
+  color: var(--accent-color);
+  text-decoration: none;
+  transition: opacity 0.2s ease;
+}
+
+.link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
 .about-section {
   margin-top: 10px;
   padding-top: 20px;
@@ -468,12 +682,18 @@ function startKeybindCapture() {
   transform: scale(0.95);
 }
 
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-primary {
   background: var(--accent-color);
   color: white;
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background: var(--accent-color-hover);
   transform: translateY(-1px);
 }
@@ -484,7 +704,7 @@ function startKeybindCapture() {
   border: 1px solid var(--border-color);
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: var(--bg-tertiary);
   filter: brightness(1.1);
 }
@@ -495,7 +715,7 @@ function startKeybindCapture() {
   border: none;
 }
 
-.btn-danger:hover {
+.btn-danger:hover:not(:disabled) {
   filter: brightness(0.9);
 }
 

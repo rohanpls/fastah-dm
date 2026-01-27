@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { remove } from "@tauri-apps/plugin-fs";
+import { check, Update } from "@tauri-apps/plugin-updater";
 import { ref, computed, watch } from "vue";
 
 export interface DownloadItem {
@@ -35,6 +36,8 @@ export interface AppSettings {
   launch_on_startup: boolean;
   toggle_keybind: string | null;
   use_new_ui: boolean;
+  auto_update_enabled: boolean;
+  silent_updates: boolean;
 }
 
 interface DownloadHistoryItem {
@@ -61,6 +64,13 @@ export const useDownloadStore = defineStore("download", () => {
   const settings = ref<AppSettings | null>(null);
   const initialized = ref(false);
   const filterStatus = ref<'all' | 'active' | 'completed'>('all');
+
+  // Update state
+  const updateAvailable = ref(false);
+  const updateInfo = ref<Update | null>(null);
+  const isCheckingUpdate = ref(false);
+  const updateDownloadProgress = ref(0);
+  const showUpdateModal = ref(false);
 
   // Getters
   const activeDownloads = computed(() => downloads.value.filter(d => d.status === "downloading"));
@@ -372,12 +382,63 @@ export const useDownloadStore = defineStore("download", () => {
     return currentFilename;
   }
 
+  // Check for updates
+  async function checkForUpdates(): Promise<boolean> {
+    if (isCheckingUpdate.value) return false;
+    
+    isCheckingUpdate.value = true;
+    updateAvailable.value = false;
+    updateInfo.value = null;
+    
+    try {
+      const update = await check();
+      
+      if (update) {
+        updateAvailable.value = true;
+        updateInfo.value = update;
+        console.log(`Update available: ${update.version} (current: ${update.currentVersion})`);
+        return true;
+      } else {
+        console.log("No updates available");
+        return false;
+      }
+    } catch (error) {
+      console.error("Failed to check for updates:", error);
+      return false;
+    } finally {
+      isCheckingUpdate.value = false;
+    }
+  }
+
+  // Download and install update
+  async function downloadAndInstallUpdate() {
+    if (!updateInfo.value) return;
+    
+    try {
+      updateDownloadProgress.value = 0;
+      
+      // Download and install (will automatically restart the app)
+      await updateInfo.value.downloadAndInstall();
+      
+      updateDownloadProgress.value = 100;
+      console.log("Update installed, app will restart...");
+    } catch (error) {
+      console.error("Failed to install update:", error);
+      throw error;
+    }
+  }
+
   return {
     downloads,
     selectedPath,
     storageInfo,
     settings,
     filterStatus,
+    updateAvailable,
+    updateInfo,
+    isCheckingUpdate,
+    updateDownloadProgress,
+    showUpdateModal,
     init,
     startDownload,
     pauseDownload,
@@ -392,6 +453,8 @@ export const useDownloadStore = defineStore("download", () => {
     filteredDownloads,
     checkFileExists,
     generateUniqueFilename,
-    findAvailableFilename
+    findAvailableFilename,
+    checkForUpdates,
+    downloadAndInstallUpdate
   };
 });

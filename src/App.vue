@@ -4,6 +4,7 @@ import { useDownloadStore } from "./stores/downloadStore";
 import DownloadItemNew from "./components/DownloadItemNew.vue";
 import SettingsModal from "./components/SettingsModal.vue";
 import NewDownloadModal from "./components/NewDownloadModal.vue";
+import UpdateModal from "./components/UpdateModal.vue";
 
 const store = useDownloadStore();
 const searchQuery = ref("");
@@ -49,11 +50,29 @@ const downloadStats = computed(() => {
 
 onMounted(() => {
   store.init();
+  
+  // Check for updates on startup if enabled
+  setTimeout(() => {
+    if (store.settings?.auto_update_enabled) {
+      store.checkForUpdates().then((hasUpdate) => {
+        if (hasUpdate && store.settings?.silent_updates) {
+          // Auto-install silently
+          store.downloadAndInstallUpdate().catch(console.error);
+        } else if (hasUpdate) {
+          // Show update modal
+          store.showUpdateModal = true;
+        }
+      });
+    }
+  }, 2000);
 });
 
 function showSettings() {
   currentView.value = 'settings';
-  // Reset filter when leaving downloads view? Optional.
+  // Check for updates when opening settings
+  if (store.settings?.auto_update_enabled && !store.isCheckingUpdate) {
+    store.checkForUpdates();
+  }
 }
 
 function showNewDownload() {
@@ -123,14 +142,17 @@ function isLinkActive(status: string) {
 
         <div class="sidebar-footer">
           <button 
-            class="nav-item" 
+            class="nav-item settings-button" 
             :class="{ active: currentView === 'settings' }"
             @click="showSettings"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
+            <div class="icon-wrapper">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span v-if="store.updateAvailable" class="update-badge"></span>
+            </div>
             <span>Settings</span>
           </button>
         </div>
@@ -195,6 +217,9 @@ function isLinkActive(status: string) {
         </div>
       </main>
     </div>
+
+    <!-- Update Modal (Global Overlay) -->
+    <UpdateModal :show="store.showUpdateModal" @close="store.showUpdateModal = false" />
   </div>
 </template>
 
@@ -299,6 +324,36 @@ function isLinkActive(status: string) {
 .sidebar-footer {
   padding: 24px 16px;
   border-top: 1px solid var(--border-color);
+}
+
+.settings-button .icon-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.update-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 10px;
+  height: 10px;
+  background-color: var(--error-color);
+  border-radius: 50%;
+  border: 2px solid var(--bg-secondary);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.1);
+  }
 }
 
 .main-content-new {

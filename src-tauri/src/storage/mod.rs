@@ -21,6 +21,8 @@ pub struct AppSettings {
     pub launch_on_startup: bool,
     pub toggle_keybind: Option<String>,
     pub use_new_ui: bool,
+    pub auto_update_enabled: bool,
+    pub silent_updates: bool,
 }
 
 impl Default for AppSettings {
@@ -33,6 +35,8 @@ impl Default for AppSettings {
             launch_on_startup: false,
             toggle_keybind: Some("Ctrl+Shift+D".to_string()),
             use_new_ui: true,
+            auto_update_enabled: true,
+            silent_updates: false,
         }
     }
 }
