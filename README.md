@@ -27,7 +27,10 @@ A fast, modern download manager built with Tauri 2, Vue 3, and Rust.
 
 ## Screenshots
 
-Coming soon...
+<p align="center">
+  <img width="49%" alt="Downloads screen" src="https://github.com/user-attachments/assets/bafce47f-944d-4e3e-84be-11c1a05695ce" />
+  <img width="49%" alt="New Download screen" src="https://github.com/user-attachments/assets/97cc430f-4989-4e78-801d-2530d1de9175" />
+</p>
 
 ## Installation
 
