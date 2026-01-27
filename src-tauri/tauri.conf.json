@@ -1,6 +1,6 @@
 {
   "productName": "fastah-dm",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "com.rohanpls.fastah-dm",
   "build": {
     "beforeDevCommand": "pnpm dev",

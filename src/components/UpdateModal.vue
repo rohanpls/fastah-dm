@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import { useDownloadStore } from '../stores/downloadStore';
 
-const props = defineProps<{ show: boolean }>();
+defineProps<{ show: boolean }>();
 const emit = defineEmits(['close']);
 
 const store = useDownloadStore();
