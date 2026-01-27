@@ -355,7 +355,7 @@ function startKeybindCapture() {
               <h3>About</h3>
               <p class="app-name">Fastah Download Manager</p>
               <p class="version">Version {{ appVersion }}</p>
-              <p class="author">Made with ❤️ by <strong>@rohanpls</strong></p>
+              <p class="author">Made with ❤️ by <strong>@rohanpls</strong> | View on <strong><a href="https://github.com/rohanpls/fastah-dm" target="_blank" class="link">GitHub</a></strong></p>
             </div>
           </div>
         </div>
