@@ -6,6 +6,8 @@ import { remove } from "@tauri-apps/plugin-fs";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { ref, computed, watch } from "vue";
 
+export type DownloadType = 'http' | 'gdrive' | 'torrent' | 'magnet';
+
 export interface DownloadItem {
   id: string;
   url: string;
@@ -19,6 +21,8 @@ export interface DownloadItem {
   etag?: string;
   createdAt?: string;
   updatedAt?: string;
+  downloadType: DownloadType;
+  originalUrl?: string;
 }
 
 export interface StorageInfo {
@@ -51,6 +55,8 @@ interface DownloadHistoryItem {
   etag: string | null;
   created_at: string;
   updated_at: string;
+  download_type?: string;
+  original_url?: string | null;
 }
 
 interface DownloadHistory {
@@ -110,7 +116,9 @@ export const useDownloadStore = defineStore("download", () => {
           status: item.status as DownloadItem["status"],
           etag: item.etag || undefined,
           createdAt: item.created_at,
-          updatedAt: item.updated_at
+          updatedAt: item.updated_at,
+          downloadType: (item.download_type as DownloadType) || 'http',
+          originalUrl: item.original_url || undefined,
         }));
       }
       
@@ -146,7 +154,9 @@ export const useDownloadStore = defineStore("download", () => {
           status: d.status,
           etag: d.etag || null,
           created_at: d.createdAt || new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
+          download_type: d.downloadType,
+          original_url: d.originalUrl || null,
         }))
       };
       await invoke("save_download_history", { history });
@@ -186,12 +196,32 @@ export const useDownloadStore = defineStore("download", () => {
     }
   });
 
-  listen<string>("download://complete", (event) => {
-    const id = event.payload;
+  listen<any>("download://complete", (event) => {
+    const payload = event.payload;
+    const id = typeof payload === 'string' ? payload : payload.id;
     const item = downloads.value.find((d) => d.id === id);
     if (item) {
       item.status = "completed";
       item.speed = 0;
+      // Update path and filename if provided (e.g., when server updates filename)
+      if (typeof payload === 'object') {
+        if (payload.path) {
+          item.url = payload.path;
+        }
+        if (payload.filename) {
+          item.filename = payload.filename;
+          // Also update path if needed
+          if (payload.path) {
+            const pathObj = typeof window !== 'undefined' && navigator.userAgent.includes("Windows")
+              ? payload.path.split('\\')
+              : payload.path.split('/');
+            if (pathObj.length > 1) {
+              item.path = pathObj.slice(0, -1).join(navigator.userAgent.includes("Windows") ? '\\' : '/');
+              item.filename = pathObj[pathObj.length - 1];
+            }
+          }
+        }
+      }
       refreshStorage();
     }
   });
@@ -219,15 +249,18 @@ export const useDownloadStore = defineStore("download", () => {
   async function startDownload(url: string, filename: string) {
     if (!selectedPath.value) throw new Error("No folder selected");
     
-    // Construct full path (basic)
     const sep = navigator.userAgent.includes("Windows") ? "\\" : "/";
     const fullPath = `${selectedPath.value}${sep}${filename}`; 
 
     try {
-        const id = await invoke<string>("download_file", { url, savePath: fullPath });
+        const response = await invoke<{
+          id: string;
+          download_type: string;
+          original_url: string | null;
+        }>("download_file", { url, savePath: fullPath });
         
         downloads.value.push({
-            id,
+            id: response.id,
             url,
             path: selectedPath.value,
             filename,
@@ -235,9 +268,11 @@ export const useDownloadStore = defineStore("download", () => {
             downloaded: 0,
             speed: 0,
             status: "downloading",
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            downloadType: response.download_type as DownloadType,
+            originalUrl: response.original_url || undefined,
         });
-    } catch (e: any) {
+    } catch (e: unknown) {
         console.error("Failed to start", e);
         throw e;
     }
@@ -258,12 +293,17 @@ export const useDownloadStore = defineStore("download", () => {
       const fullPath = `${item.path}${sep}${item.filename}`;
 
       try {
-          const newId = await invoke<string>("download_file", { url: item.url, savePath: fullPath });
-          item.id = newId;
+          const response = await invoke<{
+            id: string;
+            download_type: string;
+            original_url: string | null;
+          }>("download_file", { url: item.url, savePath: fullPath });
+          
+          item.id = response.id;
           item.status = "downloading";
           item.error = undefined;
-      } catch (e: any) {
-          item.error = e.toString();
+      } catch (e: unknown) {
+          item.error = String(e);
           item.status = "error";
       }
   }

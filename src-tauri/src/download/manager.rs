@@ -7,6 +7,9 @@ use tokio::io::{AsyncWriteExt, AsyncSeekExt, SeekFrom};
 use futures_util::StreamExt;
 use super::http::HttpHelper;
 use serde::Serialize;
+use crate::download::{Downloader, DownloadContext, DownloadError, DownloadMeta};
+use crate::download::gdrive::GDriveDownloader;
+use crate::storage::DownloadType;
 
 #[derive(Clone, Serialize)]
 pub struct ProgressEvent {
@@ -36,24 +39,73 @@ impl DownloadManager {
     pub async fn download(&mut self, url: String, path: String) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
         let app = self.app.clone().ok_or("App not initialized")?;
-        
         let http = HttpHelper::new();
-        let task_id = id.clone();
-        
-        let handle = tokio::spawn(async move {
-            match FileDownloader::run(task_id.clone(), url, path, app.clone(), http).await {
-                Ok(_) => {
-                    let _ = app.emit("download://complete", task_id);
-                },
+
+        let meta: DownloadMeta = if GDriveDownloader::detect(&url) {
+            match GDriveDownloader::analyze(&url, &http).await {
+                Ok(Some(m)) => m,
+                Ok(None) => {
+                    DownloadMeta {
+                        download_type: DownloadType::Http,
+                        direct_url: url.clone(),
+                        original_url: None,
+                        suggested_filename: None,
+                    }
+                }
                 Err(e) => {
-                     let _ = app.emit("download://error", (task_id, e));
+                    let _ = app.emit("download://error", serde_json::json!({
+                        "id": id,
+                        "error": e.to_string(),
+                    }));
+                    return Err(e.to_string());
                 }
             }
+        } else {
+            DownloadMeta {
+                download_type: DownloadType::Http,
+                direct_url: url.clone(),
+                original_url: None,
+                suggested_filename: None,
+            }
+        };
+
+        let task_id = id.clone();
+        let task_url = meta.direct_url.clone();
+        let task_path = path.clone();
+        let task_app = app.clone();
+        let task_original_url = meta.original_url.clone();
+        let download_type = meta.download_type.clone();
+
+        let handle = tokio::spawn(async move {
+            let ctx = DownloadContext {
+                id: task_id.clone(),
+                url: task_url,
+                save_path: task_path,
+                app: task_app.clone(),
+                http: HttpHelper::new(),
+                original_url: task_original_url,
+                downloaded_bytes: 0,
+            };
+
+            let result = match download_type {
+                DownloadType::GoogleDrive => GDriveDownloader::run(ctx).await,
+                _ => FileDownloader::run_legacy(ctx).await,
+            };
+
+            if let Err(e) = result {
+                eprintln!("Download error for {}: {}", task_id, e);
+                let _ = task_app.emit("download://error", (task_id.clone(), e.to_string()));
+            }
         });
-        
+
         self.tasks.insert(id.clone(), handle.abort_handle());
-        
-        Ok(id)
+
+        Ok(serde_json::json!({
+            "id": id,
+            "download_type": meta.download_type.as_str(),
+            "original_url": meta.original_url,
+            "direct_url": meta.direct_url,
+        }).to_string())
     }
 
     pub fn pause(&mut self, id: String) -> Result<(), String> {
@@ -69,62 +121,46 @@ impl DownloadManager {
     }
 }
 
-struct FileDownloader;
+pub struct FileDownloader;
 impl FileDownloader {
-    async fn run(id: String, url: String, path: String, app: AppHandle, http: HttpHelper) -> Result<(), String> {
+    pub async fn run_legacy(ctx: DownloadContext) -> Result<(), DownloadError> {
+        let DownloadContext { id, url, save_path: path, app, http, original_url: _, downloaded_bytes: _ } = ctx;
         // 1. Get metadata
-        let meta = http.get_metadata(&url).await.map_err(|e| e.to_string())?;
+        let meta = http.get_metadata(&url).await.map_err(|e| DownloadError::NetworkError(e))?;
         
-        // 2. Check file
+        // 2. Check file - use .fdm extension for incomplete downloads
         let file_path = PathBuf::from(&path);
+        let temp_path = PathBuf::from(format!("{}.fdm", path));
         let mut downloaded = 0;
-        if file_path.exists() {
-             downloaded = tokio::fs::metadata(&file_path).await.map(|m| m.len()).unwrap_or(0);
+        if temp_path.exists() {
+             downloaded = tokio::fs::metadata(&temp_path).await.map(|m| m.len()).unwrap_or(0);
         }
         
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
             .append(true)
-            .open(&file_path)
-            .await.map_err(|e| e.to_string())?;
+            .open(&temp_path)
+            .await.map_err(|e| DownloadError::IoError(e.to_string()))?;
             
         // 3. Start stream logic
         // If file exists and server supports range, resume.
         // If file exists but no range support, restart (truncate).
         
         let response = if downloaded > 0 && meta.accept_ranges {
-            // Assume we want the rest
-             // range request from downloaded to specific end if we knew it, or just open ended
-             // Since http helper takes start/end, let's look at http helper sig.
-             // download_range_request(url, start, end). 
-             // Ideally we want "byte=start-".
-             // Let's modify http helper to handle end=0 as "end of file" or add a new method?
-             // Or just pass a very large number? "bytes=start-" is standard.
-             // I'll adjust the call to be specific if I know size, or "start-" if supported.
-             
-             // For now, let's assume we want until the end if size is known.
-             // Note: My http helper takes u64 for end. It needs to format string.
-             // I'll hack it for now: if end < start, format as "start-"? No, helper implementation:
-             // format!("bytes={}-{}", start, end); -> this is closed range.
-             // I need to update HttpHelper to support open range.
-             
-             if let Some(total) = meta.size {
-                 http.download_range_request(&url, downloaded, total).await?
-             } else {
-                 // Fallback if size unknown but range supported? Rare.
-                 // Ideally "bytes=start-".
-                 // I will skip resume if size unknown for this iteration to accept simplicity.
-                 http.download_stream_request(&url).await?
-             }
+            if let Some(total) = meta.size {
+                http.download_range_request(&url, downloaded, total).await.map_err(|e| DownloadError::NetworkError(e))?
+            } else {
+                http.download_stream_request(&url).await.map_err(|e| DownloadError::NetworkError(e))?
+            }
         } else {
             if downloaded > 0 {
                 // Truncate
-                file.set_len(0).await.map_err(|e| e.to_string())?;
-                file.seek(SeekFrom::Start(0)).await.map_err(|e| e.to_string())?;
+                file.set_len(0).await.map_err(|e| DownloadError::IoError(e.to_string()))?;
+                file.seek(SeekFrom::Start(0)).await.map_err(|e| DownloadError::IoError(e.to_string()))?;
                 downloaded = 0;
             }
-            http.download_stream_request(&url).await?
+            http.download_stream_request(&url).await.map_err(|e| DownloadError::NetworkError(e))?
         };
         
         let mut stream = response.bytes_stream();
@@ -135,8 +171,8 @@ impl FileDownloader {
         let mut bytes_since_emit = 0;
 
         while let Some(item) = stream.next().await {
-            let chunk = item.map_err(|e| e.to_string())?;
-            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            let chunk = item.map_err(|e| DownloadError::NetworkError(e.to_string()))?;
+            file.write_all(&chunk).await.map_err(|e| DownloadError::IoError(e.to_string()))?;
             let len = chunk.len() as u64;
             downloaded += len;
             bytes_since_emit += len;
@@ -162,6 +198,15 @@ impl FileDownloader {
             total,
             speed: 0,
         });
+        
+        // Close file and rename from .fdm to final name
+        drop(file);
+        tokio::fs::rename(&temp_path, &file_path)
+            .await
+            .map_err(|e| DownloadError::IoError(format!("Failed to rename file: {}", e)))?;
+        
+        // Emit completion event
+        let _ = app.emit("download://complete", id);
         
         Ok(())
     }

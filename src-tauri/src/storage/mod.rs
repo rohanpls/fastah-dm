@@ -2,6 +2,28 @@ use sysinfo::Disks;
 use std::path::Path;
 use std::fs;
 use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DownloadType {
+    #[default]
+    Http,
+    #[serde(rename = "gdrive")]
+    GoogleDrive,
+    Torrent,
+    Magnet,
+}
+
+impl DownloadType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DownloadType::Http => "http",
+            DownloadType::GoogleDrive => "gdrive",
+            DownloadType::Torrent => "torrent",
+            DownloadType::Magnet => "magnet",
+        }
+    }
+}
 use tauri::Manager;
 
 #[derive(Serialize)]
@@ -53,6 +75,10 @@ pub struct DownloadHistoryItem {
     pub etag: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub download_type: DownloadType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]

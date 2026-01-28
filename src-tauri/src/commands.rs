@@ -3,6 +3,14 @@ use crate::download::manager::DownloadManager;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex;
 use std::path::Path;
+use serde::Serialize;
+
+#[derive(Serialize)]
+pub struct DownloadResponse {
+    pub id: String,
+    pub download_type: String,
+    pub original_url: Option<String>,
+}
 
 #[tauri::command]
 pub fn get_system_storage(path: String) -> Result<storage::StorageInfo, String> {
@@ -22,9 +30,18 @@ pub async fn download_file(
     state: State<'_, Mutex<DownloadManager>>,
     url: String,
     save_path: String
-) -> Result<String, String> {
+) -> Result<DownloadResponse, String> {
     let mut manager = state.lock().await;
-    manager.download(url, save_path).await
+    let result_json = manager.download(url, save_path).await?;
+    
+    let result: serde_json::Value = serde_json::from_str(&result_json)
+        .map_err(|e| e.to_string())?;
+    
+    Ok(DownloadResponse {
+        id: result["id"].as_str().unwrap_or_default().to_string(),
+        download_type: result["download_type"].as_str().unwrap_or("http").to_string(),
+        original_url: result["original_url"].as_str().map(|s| s.to_string()),
+    })
 }
 
 #[tauri::command]

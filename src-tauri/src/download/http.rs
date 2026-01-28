@@ -16,9 +16,17 @@ pub struct DownloadMetadata {
 
 impl HttpHelper {
     pub fn new() -> Self {
-        Self {
-            client: Client::builder().build().unwrap(), // Default client
-        }
+        let client = Client::builder()
+            .cookie_store(true)
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        
+        Self { client }
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
     }
 
     pub async fn get_metadata(&self, url: &str) -> Result<DownloadMetadata, String> {

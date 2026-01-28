@@ -2,9 +2,14 @@
 import { computed } from 'vue';
 import { useDownloadStore, type DownloadItem } from '../stores/downloadStore';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 
 const props = defineProps<{
   item: DownloadItem;
+}>();
+
+const emit = defineEmits<{
+  (e: 'showNotification', message: string): void;
 }>();
 
 const store = useDownloadStore();
@@ -126,14 +131,31 @@ async function openFolder() {
     console.error("Failed to reveal file in directory:", e);
   }
 }
+
+async function copyDownloadLink() {
+  const urlToCopy = props.item.downloadType === 'gdrive' && props.item.originalUrl 
+    ? props.item.originalUrl 
+    : props.item.url;
+  
+  try {
+    await writeText(urlToCopy);
+    emit('showNotification', 'Link copied to clipboard');
+  } catch (err) {
+    console.error('Failed to copy:', err);
+  }
+}
 </script>
 
 <template>
   <div class="download-item-new" :class="{ 'is-completed': item.status === 'completed' }">
     <!-- File Type Icon -->
-    <div class="file-icon" :style="{ background: `${fileTypeIcon.color}20`, color: fileTypeIcon.color }">
+    <div class="file-icon" :style="{ background: item.downloadType === 'gdrive' ? 'rgba(66, 133, 244, 0.1)' : `${fileTypeIcon.color}20`, color: item.downloadType === 'gdrive' ? '#4285f4' : fileTypeIcon.color }">
+      <!-- Google Drive Icon -->
+      <svg v-if="item.downloadType === 'gdrive'" viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+        <path d="M7.71 3.5L1.15 15l3.43 6 6.56-11.5L7.71 3.5zm1.42 0l6.56 11.5H22l-6.57-11.5H9.13zM12 9.17L8.57 15h6.86L12 9.17zm-1.29 6.33l-3.43 6h13.72l3.43-6H10.71z"/>
+      </svg>
       <!-- Video -->
-      <svg v-if="fileTypeIcon.type === 'video'" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg v-else-if="fileTypeIcon.type === 'video'" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <polygon points="23 7 16 12 23 17 23 7"></polygon>
         <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
       </svg>
@@ -225,6 +247,18 @@ async function openFolder() {
     
     <!-- Actions -->
     <div class="item-actions">
+      <!-- Copy Link Button -->
+      <button 
+        class="action-btn" 
+        @click="copyDownloadLink"
+        title="Copy download link"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+      </button>
+      
       <!-- Active download actions -->
       <template v-if="isActive">
         <button 
